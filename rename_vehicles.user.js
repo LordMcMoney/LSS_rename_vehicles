@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Rename Vehicles
 // @namespace    https://github.com/Praschinator
-// @version      0.0.3
+// @version      0.0.4
 // @description  Rename vehicles in the game
-// @author       Eli_Pra16 (forum.leitstellenspiel.de)
+// @author       Eli_Pra16 (forum.leitstellenspiel.de),LordMcMoney
 // @match        https://www.leitstellenspiel.de/*
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -14,10 +14,8 @@
 // @connect      leitstellenspiel.de
 // @require      https://raw.githubusercontent.com/LUFSI/framework/refs/heads/main/src/SharedAPIStorage.js
 
-// @require      file://C:\Users\Elias\Documents\GitHub\LSS_rename_vehicles\rename_vehicles.user.js
-
 // ==/UserScript==
-
+/* global $,sharedAPIStorage */
 const TESTING = false;
 const VEHICLE_TYPE_CATALOG_URL = 'https://api.lss-manager.de/de_DE/vehicles';
 
@@ -26,20 +24,12 @@ const RENAME_PATTERN_STORAGE_KEY = 'rv_rename_pattern';
 const LS_KEYS = {
     vehicleTypeAliases: 'rv_vehicleTypeAliases',
     buildingAliases: 'rv_buildingAliases',
-    vehicleTypeCatalogMap: 'rv_vehicleTypeCatalogMap',
-    vehicles: 'vehicles_data',
-    buildings: 'building_data'
+    vehicleTypeCatalogMap: 'rv_vehicleTypeCatalogMap'
 };
+var execute_abort = false;
 
 /** KONFIG: Erlaubte Building Types (nur numerisch) */
 const ALLOWED_BUILDING_TYPES = new Set([0, 2, 5, 6, 9, 11, 12, 13, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 28]);
-
-/** Force: clears cached buildings and reloads them via API; no args. */
-async function forceReloadBuildings() {
-    localStorage.removeItem(LS_KEYS.buildings);
-    await api_call_buildings();
-    console.log('[RV] Buildings reloaded fresh from API');
-}
 
 /** Storage: get JSON from localStorage with fallback. Args: key String, fallback any. */
 function lsGetJson(key, fallback = null) {
@@ -85,7 +75,7 @@ function debounce(fn, wait=300) {
     let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), wait); };
 }
 
-// Styles // Abgekuckt von Caddy 
+// Styles // Abgekuckt von Caddy
 const styles = `
 #rename_vehicles_extension-lightbox {
     position: fixed;
@@ -508,13 +498,13 @@ function add_button_to_personal_dropdown() {
     profileMenu.insertAdjacentHTML(
         'beforeend',
         `<li role="presentation">
-            <a id="rename-vehicles-menu-button" href="#">Fahrzeuge umbenennen</a>
+            <a id="rename-vehicles-menu-button" href="#"><span class="glyphicon glyphicon-tags" aria-hidden="true"></span>      Fahrzeuge umbenennen</a>
          </li>`
     );
     document.getElementById('rename-vehicles-menu-button').addEventListener('click', async e => {
         e.preventDefault();
         if (TESTING) return open_iframe();
-        await Promise.all([api_call_buildings(), api_call_vehicles()]);
+        await Promise.all([sharedAPIStorage.getBuildings(),sharedAPIStorage.getVehicles()]);
         open_iframe();
     });
 }
@@ -551,45 +541,43 @@ function open_iframe() {
             </div>
         </div>`;
     document.body.appendChild(lightbox);
+    sharedAPIStorage.getBuildings().then(building_data => {
+        sharedAPIStorage.getVehicles().then(vehicle_data => {
+            if (building_data && vehicle_data) {
+                console.log("Joined data:", joinVehiclesWithBuildings(vehicle_data, building_data));
+            }
 
-    const building_data = lsGetJson(LS_KEYS.buildings, null);
-    const vehicle_data  = lsGetJson(LS_KEYS.vehicles, null);
-    if (building_data && vehicle_data) {
-        console.log("Joined data:", joinVehiclesWithBuildings(vehicle_data, building_data));
-    }
+            lightbox.querySelector('#rename_vehicles_extension-lightbox-close')
+                .addEventListener('click', () => lightbox.remove());
 
-    lightbox.querySelector('#rename_vehicles_extension-lightbox-close')
-        .addEventListener('click', () => lightbox.remove());
-
-    lightbox.querySelector('#rename_vehicles_settings-button')
-        .addEventListener('click', async () => {
-            await open_settings_modal(
-                lsGetJson(LS_KEYS.vehicles, []) || [],
-                lsGetJson(LS_KEYS.buildings, []) || []
-            );
+            lightbox.querySelector('#rename_vehicles_settings-button')
+                .addEventListener('click', async () => {
+                await open_settings_modal(vehicle_data || [],
+                    building_data || []
+                );
+            });
+            lightbox.querySelector('#rename_vehicles_rename-button')
+                .addEventListener('click', () => {
+                open_rename_modal(vehicle_data || [],
+                    building_data || []
+                );
+            });
+            lightbox.querySelector('#rename_vehicles_execute-button')
+                .addEventListener('click', () => {
+                execute_abort = false;
+                open_execute_modal(
+                    vehicle_data || [],
+                    building_data || []
+                );
+            });
         });
-    lightbox.querySelector('#rename_vehicles_rename-button')
-        .addEventListener('click', () => {
-            open_rename_modal(
-                lsGetJson(LS_KEYS.vehicles, []) || [],
-                lsGetJson(LS_KEYS.buildings, []) || []
-            );
-        });
-    lightbox.querySelector('#rename_vehicles_execute-button')
-        .addEventListener('click', () => {
-            open_execute_modal(
-                lsGetJson(LS_KEYS.vehicles, []) || [],
-                lsGetJson(LS_KEYS.buildings, []) || []
-            );
-        });
+    });
 }
 
 /** API: fetches and normalizes the unique vehicle type list. Args: playerVehicles Array. */
 async function uniqueVehicleTypes(playerVehicles = []) {
     try {
-        const resp = await fetch(VEHICLE_TYPE_CATALOG_URL, { cache:'no-store' });
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const data = await resp.json();
+        const data = await $.getJSON(VEHICLE_TYPE_CATALOG_URL);
         let list = [];
         if (Array.isArray(data)) {
             list = data.map(it => {
@@ -609,7 +597,8 @@ async function uniqueVehicleTypes(playerVehicles = []) {
         const seen = new Set();
         list = list.filter(v => !seen.has(v.id) && seen.add(v.id)).sort((a,b)=>a.id-b.id);
         return list;
-    } catch {
+    } catch (error){
+          console.error(error);
         const seen = new Set(), fb=[];
         playerVehicles.forEach(v=>{
             const raw = v.vehicle_type_id ?? v.vehicle_type ?? v.type ?? v.class ?? v.id;
@@ -650,7 +639,6 @@ function uniqueBuildings(buildings) {
 /** UI: opens alias settings modal with vehicle/building alias inputs. Args: vehicles Array, buildings Array. */
 async function open_settings_modal(vehicles, buildings) {
     if (document.getElementById('rename_vehicles_settings-overlay')) return;
-
     const vehicleTypes = await uniqueVehicleTypes(vehicles);
     cacheVehicleTypeCatalogMap(vehicleTypes);
 
@@ -801,13 +789,10 @@ function open_rename_modal() {
 /** UI: opens execution modal, generates previews and commits renames. Args: vehicles Array, buildings Array. */
 function open_execute_modal(vehicles, buildings) {
     if (document.getElementById('rename_vehicles_execute-overlay')) return;
-
     const vtAliases = loadAliasMap(LS_KEYS.vehicleTypeAliases);
     const bdAliases = loadAliasMap(LS_KEYS.buildingAliases);
-
     const buildingMap = new Map();
     buildings.forEach(b => buildingMap.set(b.id, b));
-
     const overlay = document.createElement('div');
     overlay.id = 'rename_vehicles_execute-overlay';
     overlay.innerHTML = `
@@ -829,19 +814,20 @@ function open_execute_modal(vehicles, buildings) {
                         <th>Nr</th><th>Neuer Name (Vorschau)</th><th>Status</th>
                     </tr>
                 </thead>
-                <tbody id="rv_exec_tbody"></tbody>
             </table>
         </div>
       </div>`;
     document.body.appendChild(overlay);
-
+    const table = overlay.querySelector('#rename_vehicles_execute-table')
     overlay.querySelector('#rename_vehicles_execute-close')
-        .addEventListener('click', () => overlay.remove());
-
-    const tbody = overlay.querySelector('#rv_exec_tbody');
+        .addEventListener('click', () => {
+        execute_abort = true;
+        overlay.remove();
+    });
     const patternInfo = overlay.querySelector('#rv_pattern_info');
-
     (async () => {
+        var tbody =document.createElement('tbody');
+        tbody.id = 'rv_exec_tbody';
         const catalogMap = await getVehicleTypeCatalogCached(vehicles);
         vehicles.forEach((v, idx) => {
             const b = buildingMap.get(v.building_id) || {};
@@ -867,7 +853,7 @@ function open_execute_modal(vehicles, buildings) {
                 <td class="rv_status_cell rv_status_pending">PENDING</td>`;
             tbody.appendChild(tr);
         });
-
+        table.appendChild(tbody);
         const ui = {
             tbody,
             progressBox: overlay.querySelector('#rv_exec_progress'),
@@ -905,11 +891,23 @@ function open_execute_modal(vehicles, buildings) {
 
                 const oldName = vehicle.caption || '';
                 tr.querySelector('.rv_new_name').textContent = newName;
-                if (newName && newName !== oldName) tr.classList.add('rv_changed'); else tr.classList.remove('rv_changed');
-                ops.push({ id: vid, old: oldName, proposed: newName });
+                if (newName && newName !== oldName) {
+                    tr.classList.add('rv_changed');
+                } else {
+                    tr.classList.remove('rv_changed');
+                }
+                ops.push({ id: vid, old: oldName, proposed: newName});
             });
 
             overlay.dataset.operations = JSON.stringify(ops);
+             ops.filter(o => o.proposed && o.proposed == o.old)
+                 .map(o => ({ ...o, tries:0, status:'done' })).forEach(o => {
+                 const row = tbody.querySelector(`tr[data-vehicle-id="${o.id}"]`);
+                 if (!row) return;
+                 const cell = row.querySelector('.rv_status_cell');
+                 cell.textContent = o.status.toUpperCase();
+                 cell.className = `rv_status_cell rv_status_${o.status}`;
+             });
             ui.commitBtn.disabled = false;
         });
 
@@ -947,7 +945,8 @@ async function fetchAuthTokenFromEdit(vehicleId) {
 }
 /** API: sends only caption rename PATCH for a vehicle. Args: vehicleId Number, newCaption String. */
 async function sendRenameCaptionOnly(vehicleId, newCaption) {
-    let token = await getCsrfToken();
+	/*
+	let token = await getCsrfToken();
     if (!token) token = await fetchAuthTokenFromEdit(vehicleId);
     const fd = new FormData();
     fd.append('utf8','✓');
@@ -957,6 +956,39 @@ async function sendRenameCaptionOnly(vehicleId, newCaption) {
     fd.append('commit','Speichern');
     const resp = await fetch(`/vehicles/${vehicleId}`, { method:'POST', body:fd, credentials:'same-origin' });
     if (!resp.ok) throw new Error(`Rename HTTP ${resp.status}`);
+	*/
+    var theHeight=600;
+    var theWidth=600;
+    var theTop=((screen.height/2)-(theHeight/2))/2;
+    var theLeft=(screen.width/2)-(theWidth/2);
+    var features = 'height=300px,width=800px,top='+theTop+',left='+theLeft+',toolbar=1,Location=0,Directories=0,Status=0,menubar=1,Scrollbars=1,Resizable=1';
+    var url = `/vehicles/${vehicleId}/edit`;
+    const target = '_blank';
+    var initialTime = performance.now();
+    var windowProxy = window.open(url, target, features);
+
+    if (!windowProxy) {
+      throw new Error(`Popup Blocker aktiv?`);
+    }
+
+    await new Promise(resolve => {
+      windowProxy.addEventListener('unload', ev => {
+          if (ev.srcElement.baseURI !== 'about:blank') {
+              initialTime = performance.now();
+              var delta = performance.now() - initialTime;
+              const thresholdMs = 500;
+              while(delta < thresholdMs ) {
+                  delta = performance.now() - initialTime;
+              }
+              windowProxy.close();
+              resolve();
+          }
+      });
+      windowProxy.addEventListener('DOMContentLoaded', ev => {
+          windowProxy.document.getElementById('vehicle_caption').value = newCaption;
+          windowProxy.document.getElementById(`edit_vehicle_${vehicleId}`).submit();
+      });
+    });
     return true;
 }
 
@@ -964,6 +996,8 @@ async function sendRenameCaptionOnly(vehicleId, newCaption) {
 function startCaptionRenameQueue(operations, uiCtx) {
     const queue = operations.filter(o => o.proposed && o.proposed !== o.old)
         .map(o => ({ ...o, tries:0, status:'pending' }));
+     operations.filter(o => o.proposed && o.proposed == o.old)
+        .map(o => ({ ...o, tries:0, status:'done' })).forEach(o => updateRow(o));
     if (!queue.length) {
         logExec('Keine Änderungen.');
         return queue;
@@ -982,6 +1016,10 @@ function startCaptionRenameQueue(operations, uiCtx) {
     function updateRow(item) {
         const row = uiCtx.tbody.querySelector(`tr[data-vehicle-id="${item.id}"]`);
         if (!row) return;
+        row.scrollIntoView({
+            behavior: 'smooth',
+            block: 'center'
+        });
         const cell = row.querySelector('.rv_status_cell');
         cell.textContent = item.status.toUpperCase();
         cell.className = `rv_status_cell rv_status_${item.status}`;
@@ -998,7 +1036,8 @@ function startCaptionRenameQueue(operations, uiCtx) {
     }
     /** Step: consumes next queue item, performs rename, handles retry. No direct args. */
     async function step() {
-        if (index >= queue.length) {
+        if (index >= queue.length || execute_abort
+           ) {
             logExec('Abgeschlossen.');
             updateProgress();
             uiCtx.commitBtn.disabled = false;
@@ -1009,7 +1048,10 @@ function startCaptionRenameQueue(operations, uiCtx) {
         if (['done','failed'].includes(item.status)) {
             index++; return setTimeout(step, RENAME_RATE_MS);
         }
-        item.status='running'; item.tries++; updateRow(item); updateProgress();
+        item.status='running';
+        item.tries++;
+        updateRow(item);
+        updateProgress();
         try {
             await sendRenameCaptionOnly(item.id, item.proposed);
             item.status='done';
@@ -1023,7 +1065,8 @@ function startCaptionRenameQueue(operations, uiCtx) {
                 logExec(`FEHLER ${item.id}: ${e.message}`);
             }
         }
-        updateRow(item); updateProgress();
+        updateRow(item);
+        updateProgress();
         if (item.status==='retry') {
             return setTimeout(step, RENAME_RATE_MS);
         } else {
@@ -1074,109 +1117,6 @@ function toRoman(num) {
 /** Utils: escapes HTML special chars to prevent injection. Args: str String. */
 function escapeHtml(str){ return String(str).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
-/** API: loads vehicles list and caches it in LS; waits up to 20s with retries. */
-async function api_call_vehicles(maxWaitMs = 20000) {
-    const url = "https://www.leitstellenspiel.de/api/vehicles";
-    const start = Date.now();
-    let attempt = 0;
-    let lastError;
-
-    while (Date.now() - start < maxWaitMs) {
-        attempt++;
-        const remaining = maxWaitMs - (Date.now() - start);
-        const perAttemptTimeout = Math.max(2000, Math.min(8000, remaining));
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), perAttemptTimeout);
-
-        try {
-            const resp = await fetch(url, {
-                signal: controller.signal,
-                credentials: 'same-origin',
-                cache: 'no-store'
-            });
-            clearTimeout(timeoutId);
-
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-            const data = await resp.json();
-
-            const list = Array.isArray(data)
-                ? data
-                : Array.isArray(data?.vehicles)
-                    ? data.vehicles
-                    : null;
-
-            if (Array.isArray(list)) {
-                lsSetJson(LS_KEYS.vehicles, list);
-                console.log(`API Call Vehicles erfolgreich (Versuch ${attempt}, ${list.length} Fahrzeuge)`);
-                return list;
-            }
-
-            lastError = new Error('Unerwartetes Antwortformat der Fahrzeug-API');
-        } catch (err) {
-            clearTimeout(timeoutId);
-            lastError = err;
-        }
-
-        if (Date.now() - start < maxWaitMs) {
-            await new Promise(r => setTimeout(r, 400)); // short backoff before retry
-        }
-    }
-
-    console.error(`[RV] Fahrzeuge konnten innerhalb von ${Math.round(maxWaitMs / 1000)}s nicht geladen werden.`, lastError);
-    throw new Error('Fahrzeug-API Timeout');
-}
-/** API: loads buildings list and caches it in LS; waits up to 20s with retries. */
-async function api_call_buildings(maxWaitMs = 20000) {
-    const url = "https://www.leitstellenspiel.de/api/buildings";
-    const start = Date.now();
-    let attempt = 0;
-    let lastError;
-
-    while (Date.now() - start < maxWaitMs) {
-        attempt++;
-        const remaining = maxWaitMs - (Date.now() - start);
-        const perAttemptTimeout = Math.max(2000, Math.min(8000, remaining));
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), perAttemptTimeout);
-
-        try {
-            const resp = await fetch(url, {
-                signal: controller.signal,
-                credentials: 'same-origin',
-                cache: 'no-store'
-            });
-            clearTimeout(timeoutId);
-
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-            const data = await resp.json();
-
-            const list = Array.isArray(data)
-                ? data
-                : Array.isArray(data?.buildings)
-                    ? data.buildings
-                    : null;
-
-            if (Array.isArray(list)) {
-                lsSetJson(LS_KEYS.buildings, list);
-                console.log(`API Call Buildings erfolgreich (Versuch ${attempt}, ${list.length} Gebäude)`);
-                return list;
-            }
-
-            lastError = new Error('Unerwartetes Antwortformat der Gebäude-API');
-        } catch (err) {
-            clearTimeout(timeoutId);
-            lastError = err;
-        }
-
-        if (Date.now() - start < maxWaitMs) {
-            await new Promise(r => setTimeout(r, 400)); // short backoff before retry
-        }
-    }
-
-    console.error(`[RV] Gebäude konnten innerhalb von ${Math.round(maxWaitMs / 1000)}s nicht geladen werden.`, lastError);
-    throw new Error('Gebäude-API Timeout');
-}
-
 /** UI: injects style block once into the page; no args. */
 function inject_styles() {
     if (!document.getElementById('rv_style_block')) {
@@ -1193,7 +1133,6 @@ function inject_styles() {
 (function init() {
     console.log('Rename Vehicles Script geladen', new Date().toISOString());
     inject_styles();
-
     function tryAdd() {
         add_button_to_personal_dropdown();
         if (!document.getElementById('rename-vehicles-menu-button')) {
@@ -1217,9 +1156,3 @@ function inject_styles() {
     });
     obs.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
 })();
-
-
-
-
-
-
