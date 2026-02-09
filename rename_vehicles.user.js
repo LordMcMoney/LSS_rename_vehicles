@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rename Vehicles
 // @namespace    https://github.com/Praschinator
-// @version      0.0.4
+// @version      0.0.5
 // @description  Rename vehicles in the game
 // @author       Eli_Pra16 (forum.leitstellenspiel.de),LordMcMoney
 // @match        https://www.leitstellenspiel.de/*
@@ -945,50 +945,26 @@ async function fetchAuthTokenFromEdit(vehicleId) {
 }
 /** API: sends only caption rename PATCH for a vehicle. Args: vehicleId Number, newCaption String. */
 async function sendRenameCaptionOnly(vehicleId, newCaption) {
-	/*
-	let token = await getCsrfToken();
+    let token = await getCsrfToken();
     if (!token) token = await fetchAuthTokenFromEdit(vehicleId);
-    const fd = new FormData();
-    fd.append('utf8','✓');
-    fd.append('_method','patch');
-    fd.append('authenticity_token', token);
-    fd.append('vehicle[caption]', newCaption);
-    fd.append('commit','Speichern');
-    const resp = await fetch(`/vehicles/${vehicleId}`, { method:'POST', body:fd, credentials:'same-origin' });
-    if (!resp.ok) throw new Error(`Rename HTTP ${resp.status}`);
-	*/
-    var theHeight=600;
-    var theWidth=600;
-    var theTop=((screen.height/2)-(theHeight/2))/2;
-    var theLeft=(screen.width/2)-(theWidth/2);
-    var features = 'height=300px,width=800px,top='+theTop+',left='+theLeft+',toolbar=1,Location=0,Directories=0,Status=0,menubar=1,Scrollbars=1,Resizable=1';
-    var url = `/vehicles/${vehicleId}/edit`;
-    const target = '_blank';
-    var initialTime = performance.now();
-    var windowProxy = window.open(url, target, features);
-
-    if (!windowProxy) {
-      throw new Error(`Popup Blocker aktiv?`);
-    }
-
-    await new Promise(resolve => {
-      windowProxy.addEventListener('unload', ev => {
-          if (ev.srcElement.baseURI !== 'about:blank') {
-              initialTime = performance.now();
-              var delta = performance.now() - initialTime;
-              const thresholdMs = 500;
-              while(delta < thresholdMs ) {
-                  delta = performance.now() - initialTime;
-              }
-              windowProxy.close();
-              resolve();
-          }
-      });
-      windowProxy.addEventListener('DOMContentLoaded', ev => {
-          windowProxy.document.getElementById('vehicle_caption').value = newCaption;
-          windowProxy.document.getElementById(`edit_vehicle_${vehicleId}`).submit();
-      });
-    });
+    let vbody = 'utf8=%E2%9C%93&_method=patch&authenticity_token='+encodeURIComponent(token)+'&vehicle%5Bcaption%5D='+encodeURIComponent(newCaption);
+    $.ajax({
+			        url: `/vehicles/${vehicleId}`,
+			        type: 'post',
+			        data: vbody,
+			        success: function(data) {
+                        var initialTime = performance.now();
+                        var delta = performance.now() - initialTime;
+                        const thresholdMs = 500;
+                        while(delta < thresholdMs ) {
+                            delta = performance.now() - initialTime;
+                        }
+			        	return true;
+			        },
+			        error: function(data) {
+			        	throw new Error(`Rename HTTP ${data.status}`);
+			        }
+			    });
     return true;
 }
 
@@ -996,8 +972,6 @@ async function sendRenameCaptionOnly(vehicleId, newCaption) {
 function startCaptionRenameQueue(operations, uiCtx) {
     const queue = operations.filter(o => o.proposed && o.proposed !== o.old)
         .map(o => ({ ...o, tries:0, status:'pending' }));
-     operations.filter(o => o.proposed && o.proposed == o.old)
-        .map(o => ({ ...o, tries:0, status:'done' })).forEach(o => updateRow(o));
     if (!queue.length) {
         logExec('Keine Änderungen.');
         return queue;
@@ -1017,7 +991,7 @@ function startCaptionRenameQueue(operations, uiCtx) {
         const row = uiCtx.tbody.querySelector(`tr[data-vehicle-id="${item.id}"]`);
         if (!row) return;
         row.scrollIntoView({
-            behavior: 'smooth',
+            behavior: 'instant',
             block: 'center'
         });
         const cell = row.querySelector('.rv_status_cell');
